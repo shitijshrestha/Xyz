@@ -6,7 +6,7 @@ import time
 import re
 import json
 
-BOT_TOKEN = "7422481070:AAGkqqiDm9fzy4RB5D8HcjSFGQugF8i_X2w"
+BOT_TOKEN = "7633355089:AAGxbL5qzXx-qqpmrL0HPXuZfRmB1ozcieU"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
