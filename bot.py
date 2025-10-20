@@ -1,11 +1,9 @@
 import telebot
-from telebot.apihelper import ApiTelegramException
 import subprocess
 import threading
 import os
 import io
 import time
-import psutil
 import math
 import json
 from functools import wraps
@@ -14,11 +12,10 @@ from functools import wraps
 BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=15)
 
-PERMANENT_ADMINS = [6403142441]  # Permanent admin(s)
+PERMANENT_ADMINS = [6403142441]
 approved_users_file = "approved_users.json"
 active_recordings = {}
-MAX_RECORDINGS_PER_USER = 3
-SPLIT_SIZE_MB = 40  # Split video if >40MB
+SPLIT_SIZE_MB = 40  # Split if video > 40MB
 
 # ---------------- USER APPROVAL ----------------
 if not os.path.exists(approved_users_file):
@@ -42,7 +39,7 @@ def requires_approval(func):
         if message.from_user.id in PERMANENT_ADMINS or user_approved(message.from_user.id):
             return func(message, *args, **kwargs)
         else:
-            bot.reply_to(message, "⛔️ You are not approved to use this bot. Ask admin for access.")
+            bot.reply_to(message, "⛔️ You are not approved. Ask admin for access.")
             return
     return wrapped
 
@@ -56,33 +53,31 @@ def admin_only(func):
             return
     return wrapped
 
-# ---------------- PUBLIC COMMANDS ----------------
+# ---------------- HELP & INFO ----------------
 @bot.message_handler(commands=['start'])
 @requires_approval
 def start(message):
-    bot.reply_to(message, "👋 Hello! I'm your recording bot.\nUse /help to see commands.")
+    bot.reply_to(message, "👋 Welcome! Use /help to see commands.")
 
 @bot.message_handler(commands=['help'])
 @requires_approval
 def help_command(message):
-    help_text = f"""
-/start - Welcome message
-/help - Show this help
-/getid - Show your user ID
-
-*Recording Commands:*
+    help_text = """
+/start - Welcome
+/help - This help
+/getid - Your user ID
 /record <url> [duration_sec] [title] - Start recording
-/cancel - Cancel a recording (reply to recording message)
-/myrecordings - List your active recordings
-/screenshot <url> - Take screenshot
+/myrecordings - List active recordings
 /status - Bot status
+/cancel - Cancel recording (reply)
+/screenshot <url> - Take screenshot
 """
     if message.from_user.id in PERMANENT_ADMINS:
         help_text += """
-*Admin Commands:*
-/allrecordings - Show all active recordings
-/broadcast <message> - Send message to all approved users
-/addadmin <user_id> - Approve user to use bot
+*Admin Commands*
+/addadmin <user_id> - Approve user
+/allrecordings - Show all recordings
+/broadcast <msg> - Send to all
 /reboot - Restart bot
 """
     bot.reply_to(message, help_text)
@@ -90,9 +85,9 @@ def help_command(message):
 @bot.message_handler(commands=['getid'])
 @requires_approval
 def get_id(message):
-    bot.reply_to(message, f"Your User ID: `{message.from_user.id}`", parse_mode='Markdown')
+    bot.reply_to(message, f"Your ID: `{message.from_user.id}`", parse_mode="Markdown")
 
-# ---------------- ADMIN COMMANDS ----------------
+# ---------------- ADMIN ----------------
 @bot.message_handler(commands=['addadmin'])
 @admin_only
 def add_admin(message):
@@ -102,40 +97,35 @@ def add_admin(message):
         if user_id not in users:
             users.append(user_id)
             save_approved_users(users)
-            bot.reply_to(message, f"✅ User {user_id} approved successfully.")
+            bot.reply_to(message, f"✅ User {user_id} approved.")
         else:
-            bot.reply_to(message, f"User {user_id} is already approved.")
+            bot.reply_to(message, "User already approved.")
     except:
         bot.reply_to(message, "Usage: /addadmin <user_id>")
 
 @bot.message_handler(commands=['allrecordings'])
 @admin_only
 def all_recordings(message):
-    total = sum(len(r) for r in active_recordings.values())
-    if total == 0:
+    if not active_recordings:
         bot.reply_to(message, "No active recordings.")
         return
-    response = f"All active recordings ({total}):\n"
+    text = "Active recordings:\n"
     for chat, recs in active_recordings.items():
-        response += f"\nChat ID {chat}:\n"
-        for msg_id, info in recs.items():
-            response += f"- {info['title']}: {info['progress']}\n"
-    bot.reply_to(message, response)
+        for mid, info in recs.items():
+            text += f"- {info['title']}\n"
+    bot.reply_to(message, text)
 
 @bot.message_handler(commands=['broadcast'])
 @admin_only
 def broadcast(message):
     try:
         text = message.text.split(None,1)[1]
-        users = load_approved_users()
-        for u in users:
-            try:
-                bot.send_message(u, f"📢 Broadcast:\n{text}")
-            except:
-                continue
+        for uid in load_approved_users():
+            try: bot.send_message(uid, f"📢 {text}")
+            except: continue
         bot.reply_to(message, "✅ Broadcast sent.")
     except:
-        bot.reply_to(message, "Usage: /broadcast <message>")
+        bot.reply_to(message, "Usage: /broadcast <msg>")
 
 @bot.message_handler(commands=['reboot'])
 @admin_only
@@ -146,92 +136,94 @@ def reboot_bot(message):
     subprocess.Popen([sys.executable]+sys.argv)
     os._exit(0)
 
-# ---------------- CORE FUNCTIONALITY ----------------
+# ---------------- RECORDING ----------------
 @bot.message_handler(commands=['status'])
 @requires_approval
 def status(message):
-    total = sum(len(r) for r in active_recordings.values())
-    bot.reply_to(message, f"✅ Bot is running\nActive recordings: {total}")
+    total = sum(len(v) for v in active_recordings.values())
+    bot.reply_to(message, f"✅ Bot running\nActive recordings: {total}")
 
 @bot.message_handler(commands=['myrecordings'])
 @requires_approval
 def my_recordings(message):
+    recs = active_recordings.get(message.chat.id, {})
+    if not recs:
+        bot.reply_to(message, "No active recordings.")
+        return
+    text = "Your recordings:\n"
+    for mid, info in recs.items():
+        text += f"- {info['title']}\n"
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=['record'])
+@requires_approval
+def record(message):
+    args = message.text.split()[1:]
+    if not args:
+        bot.reply_to(message,"Usage: /record <url> [duration_sec] [title]")
+        return
+    url = args[0]
+    duration = int(args[1]) if len(args)>1 else 60
+    title = " ".join(args[2:]) if len(args)>2 else "Recording"
+    ts = int(time.time())
+    file_out = f"rec_{message.chat.id}_{ts}.mp4"
+    sent_msg = bot.reply_to(message, f"🎬 Recording '{title}' started ({duration}s).")
+    threading.Thread(target=record_stream,args=(message,sent_msg.message_id,url,duration,title,file_out)).start()
+
+def record_stream(message,msg_id,url,duration,title,outfile):
     chat_id = message.chat.id
-    if chat_id in active_recordings and active_recordings[chat_id]:
-        response = "Your active recordings:\n"
-        for msg_id, rec in active_recordings[chat_id].items():
-            response += f"- {rec['title']}: {rec['progress']}\n"
-        bot.reply_to(message, response)
-    else:
-        bot.reply_to(message, "You have no active recordings.")
+    cmd = ["ffmpeg","-y","-i",url,"-t",str(duration),"-c","copy",outfile]
+    proc = subprocess.Popen(cmd)
+    if chat_id not in active_recordings: active_recordings[chat_id]={}
+    active_recordings[chat_id][msg_id]={"title":title,"pid":proc.pid,"canceled":False}
+    proc.wait()
+    if active_recordings[chat_id][msg_id]["canceled"]:
+        bot.edit_message_text(f"❌ Recording '{title}' canceled.",chat_id,msg_id)
+        if os.path.exists(outfile): os.remove(outfile)
+    elif os.path.exists(outfile):
+        bot.edit_message_text(f"✅ Recording finished. Sending...",chat_id,msg_id)
+        send_split_video(message,msg_id,outfile,title)
+    del active_recordings[chat_id][msg_id]
 
 @bot.message_handler(commands=['cancel'])
 @requires_approval
 def cancel_recording(message):
-    if not message.reply_to_message:
-        bot.reply_to(message, "Reply to recording message to cancel.")
+    if not message.reply_to_message: 
+        bot.reply_to(message,"Reply to recording to cancel")
         return
     chat_id = message.chat.id
     msg_id = message.reply_to_message.message_id
     if chat_id in active_recordings and msg_id in active_recordings[chat_id]:
-        pid = active_recordings[chat_id][msg_id]['pid']
+        pid = active_recordings[chat_id][msg_id]["pid"]
         try:
-            p = psutil.Process(pid)
-            for c in p.children(recursive=True): c.kill()
-            p.kill()
-            active_recordings[chat_id][msg_id]['canceled'] = True
-            bot.reply_to(message, f"✅ Recording '{active_recordings[chat_id][msg_id]['title']}' canceled.")
+            os.system(f"kill -9 {pid}")
+            active_recordings[chat_id][msg_id]["canceled"]=True
+            bot.reply_to(message,"✅ Recording canceled.")
         except:
-            bot.reply_to(message, "Process not found or already finished.")
+            bot.reply_to(message,"Error canceling recording")
     else:
-        bot.reply_to(message, "No active recording found for this message.")
+        bot.reply_to(message,"No recording found.")
 
-# ---------------- RECORDING ----------------
-@bot.message_handler(commands=['record'])
-@requires_approval
-def record(message):
-    chat_id = message.chat.id
-    if chat_id in active_recordings and len(active_recordings[chat_id]) >= MAX_RECORDINGS_PER_USER:
-        bot.reply_to(message, f"Maximum {MAX_RECORDINGS_PER_USER} recordings reached.")
+def send_split_video(message,msg_id,file_path,title):
+    size_mb = os.path.getsize(file_path)/(1024*1024)
+    base,ext=os.path.splitext(file_path)
+    if size_mb <= SPLIT_SIZE_MB:
+        bot.send_document(message.chat.id, open(file_path,"rb"),caption=title,reply_to_message_id=msg_id)
+        os.remove(file_path)
         return
-    try:
-        args = message.text.split()[1:]
-        if not args:
-            bot.reply_to(message, "Usage: /record <url> [duration_sec] [title]")
-            return
-        url = args[0]
-        duration = int(args[1]) if len(args) > 1 else 300
-        title = " ".join(args[2:]) if len(args) > 2 else "Untitled"
-        timestamp = int(time.time())
-        output_file = f"recording_{chat_id}_{timestamp}.mp4"
-        sent_msg = bot.reply_to(message, f"🎬 Recording '{title}' started for {duration}s.")
-        thread = threading.Thread(target=record_stream, args=(message, sent_msg.message_id, url, duration, title, output_file))
-        thread.start()
-    except Exception as e:
-        bot.reply_to(message, f"Error: {e}")
+    parts = math.ceil(size_mb/SPLIT_SIZE_MB)
+    for i in range(parts):
+        part_file = f"{base}_part{i+1}{ext}"
+        start = (i*size_mb)/parts
+        cmd = ["ffmpeg","-y","-i",file_path,"-ss",str(i*(duration/parts)),"-t",str(duration/parts),"-c","copy",part_file]
+        subprocess.run(cmd)
+        bot.send_document(message.chat.id, open(part_file,"rb"),caption=f"{title} Part {i+1}/{parts}",reply_to_message_id=msg_id)
+        os.remove(part_file)
+    os.remove(file_path)
 
-def record_stream(message, msg_id, url, duration, title, output_file):
-    chat_id = message.chat.id
-    cmd = ['ffmpeg','-y','-i',url,'-t',str(duration),'-c','copy','-progress','pipe:1',output_file]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore')
-    if chat_id not in active_recordings: active_recordings[chat_id]={}
-    active_recordings[chat_id][msg_id]={'pid':proc.pid,'title':title,'canceled':False,'progress':'Initializing...'}
-    last_update = 0
-    for line in proc.stdout:
-        if 'canceled' in active_recordings[chat_id][msg_id] and active_recordings[chat_id][msg_id]['canceled']:
-            break
-        if 'out_time_ms' in line:
-            t_ms = int(line.strip().split('=')[1])
-            progress = (t_ms/(duration*1000000))*100
-            now = time.time()
-            if now-last_update>5:
-                bar = '█'*int(progress/10)+'░'*(10-int(progress/10))
-                elapsed = time.strftime('%H:%M:%S',time.gmtime(t_ms/1000000))
-                dur_str = time.strftime('%H:%M:%S',time.gmtime(duration))
-                text = f"🔴 Recording '{title}'\n`{bar}` {progress:.1f}%\n`{elapsed} / {dur_str}`"
-                safe_edit_message(text, chat_id, msg_id, parse_mode='Markdown')
-                last_update=now
-    proc.wait()
-    if active_recordings[chat_id][msg_id]['canceled']:
-        safe_edit_message(f"❌ Recording '{title}' canceled.", chat_id, msg_id)
-        if os.path.exists(output_file): os
+# ---------------- RUN BOT ----------------
+while True:
+    try:
+        bot.polling(none_stop=True)
+    except:
+        time.sleep(5)
