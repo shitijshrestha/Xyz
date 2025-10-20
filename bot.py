@@ -46,9 +46,9 @@ def start_cmd(msg):
     bot.reply_to(
         msg,
         f"👋 Welcome to *{BOT_NAME}*\n\n"
-        "📌 Usage:\n`/record <title> <url> <HH:MM:SS>`\n\n"
-        "📝 Example:\n`/record testing http://example.com/live.m3u8 00:00:10`\n"
-        "⏰ Records immediately for given duration and auto-splits 5-min chunks."
+        "📌 Usage:\n`/record <url> <duration_HH:MM:SS> <title>`\n\n"
+        "📝 Example:\n`/record https://example.com/live.m3u8 00:00:10 Testing`\n\n"
+        "⏰ Records immediately and auto-splits 5-min chunks."
     )
 
 
@@ -57,7 +57,7 @@ def help_cmd(msg):
     bot.reply_to(
         msg,
         "🆘 *Help Guide*\n\n"
-        "Use:\n`/record <title> <url> <HH:MM:SS>`\n\n"
+        "Use:\n`/record <url> <duration_HH:MM:SS> <title>`\n\n"
         "Admin only commands:\n`/addadmin <user_id>`",
     )
 
@@ -88,10 +88,10 @@ def record_cmd(msg):
         return
     parts = msg.text.strip().split(maxsplit=3)
     if len(parts) < 4:
-        bot.reply_to(msg, "📌 Usage: /record <title> <url> <HH:MM:SS>")
+        bot.reply_to(msg, "📌 Usage: /record <url> <duration_HH:MM:SS> <title>")
         return
 
-    _, title, url, dur_str = parts
+    _, url, dur_str, title = parts
 
     # Parse duration HH:MM:SS
     try:
@@ -179,7 +179,6 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
         except Exception as e:
             bot.send_message(chat_id, f"❌ Upload failed: {e}")
 
-    # Cleanup
     for fpath in chunks + [raw_file]:
         if os.path.exists(fpath):
             try:
