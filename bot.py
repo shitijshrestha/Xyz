@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ShitijBot — Duration-Based IPTV Recorder for VPS/Termux
+# ShitijBot — Fixed IPTV Recorder for VPS/Termux
 
 import os
 import time
@@ -135,17 +135,18 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
         ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", url, "-t", str(duration), "-c", "copy", raw_file]
     )
 
-    # Live progress
+    # Live progress (one message updated)
+    progress_msg = bot.send_message(chat_id, "📊 Recording… 0% [░░░░░░░░░░░░░░░░░░░░] 0s/{duration}s")
     start_time = time.time()
-    last_update = 0
     while proc.poll() is None:
         elapsed = int(time.time() - start_time)
         percent = min(100, int(elapsed * 100 / duration))
-        if elapsed - last_update >= 5:
-            bar = "█" * (percent // 5) + "░" * (20 - percent // 5)
-            bot.send_message(chat_id, f"📊 Recording… {percent}% [{bar}] ({elapsed}s/{duration}s)")
-            last_update = elapsed
-        time.sleep(1)
+        bar = "█" * (percent // 5) + "░" * (20 - percent // 5)
+        try:
+            bot.edit_message_text(f"📊 Recording… {percent}% [{bar}] ({elapsed}s/{duration}s)", chat_id, progress_msg.message_id)
+        except:
+            pass
+        time.sleep(3)
 
     if proc.returncode != 0:
         bot.send_message(chat_id, f"⚠️ ffmpeg exited with code {proc.returncode}")
@@ -153,7 +154,7 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
 
     bot.send_message(chat_id, f"✅ Recording completed: `{os.path.basename(raw_file)}`")
 
-    # Split into 5-min chunks
+    # Split into chunks
     chunk_pattern = f"{out_base}_chunk_%03d.mp4"
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", raw_file,
@@ -170,23 +171,33 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
 
     bot.send_message(chat_id, f"📦 Uploading {len(chunks)} part(s)...")
 
-    for i, fpath in enumerate(chunks, 1):
+    def upload_chunk(fpath, part_no, total_parts):
         try:
-            msg = bot.send_message(chat_id, f"⬆️ Uploading part {i}/{len(chunks)}...")
+            msg = bot.send_message(chat_id, f"⬆️ Uploading part {part_no}/{total_parts}...")
             with open(fpath, "rb") as vid:
-                bot.send_video(chat_id, vid, caption=f"{title} — Part {i}/{len(chunks)}")
-            bot.edit_message_text(f"✅ Uploaded part {i}/{len(chunks)}", chat_id, msg.message_id)
+                bot.send_video(chat_id, vid, caption=f"{title} — Part {part_no}/{total_parts}")
+            bot.edit_message_text(f"✅ Uploaded part {part_no}/{total_parts}", chat_id, msg.message_id)
         except Exception as e:
             bot.send_message(chat_id, f"❌ Upload failed: {e}")
-
-    for fpath in chunks + [raw_file]:
-        if os.path.exists(fpath):
-            try:
+        finally:
+            if os.path.exists(fpath):
                 os.remove(fpath)
-            except:
-                pass
 
-    bot.send_message(chat_id, "🗑️ Local files deleted after upload ✅")
+    threads = []
+    for i, fpath in enumerate(chunks, 1):
+        t = threading.Thread(target=upload_chunk, args=(fpath, i, len(chunks)))
+        t.start()
+        threads.append(t)
+
+    # Also remove raw_file
+    if os.path.exists(raw_file):
+        os.remove(raw_file)
+
+    # Wait for all uploads
+    for t in threads:
+        t.join()
+
+    bot.send_message(chat_id, "🗑️ All files uploaded and deleted locally ✅")
 
 
 # ---------------- RUN BOT ----------------
