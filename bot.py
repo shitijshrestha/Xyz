@@ -100,7 +100,7 @@ def allrecordings(message):
 @admin_only
 def broadcast(message):
     try:
-        text = message.text.split(None,1)[1]
+        text = message.text.split(None, 1)[1]
         for admin in ADMIN_IDS:
             bot.send_message(admin, f"📢 Broadcast:\n{text}")
         bot.reply_to(message, "✅ Broadcast sent.")
@@ -116,10 +116,10 @@ def screenshot(message):
         return
     url = args[1]
     filename = f"screenshot_{int(time.time())}.jpg"
-    cmd = ['ffmpeg','-y','-i',url,'-vframes','1',filename]
+    cmd = ['ffmpeg', '-y', '-i', url, '-vframes', '1', filename]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if os.path.exists(filename):
-        with open(filename,'rb') as f:
+        with open(filename, 'rb') as f:
             bot.send_photo(message.chat.id, f, caption=f"Screenshot from {url}")
         os.remove(filename)
     else:
@@ -135,10 +135,10 @@ def record(message):
         return
     url = args[1]
     try:
-        h,m,s = map(int, args[2].split(":"))
-        duration_sec = h*3600 + m*60 + s
+        h, m, s = map(int, args[2].split(":"))
+        duration_sec = h * 3600 + m * 60 + s
     except:
-        bot.reply_to(message,"Invalid duration format. Use hh:mm:ss")
+        bot.reply_to(message, "Invalid duration format. Use hh:mm:ss")
         return
     title = " ".join(args[3:])
     timestamp = int(time.time())
@@ -165,7 +165,7 @@ def cancel(message):
 def record_stream(chat_id, msg_id, url, duration_sec, title, output_file):
     if chat_id not in active_recordings:
         active_recordings[chat_id] = {}
-    cmd = ['ffmpeg','-y','-i',url,'-t',str(duration_sec),'-c','copy',output_file]
+    cmd = ['ffmpeg', '-y', '-i', url, '-t', str(duration_sec), '-c', 'copy', output_file]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     active_recordings[chat_id][msg_id] = {'proc': proc, 'title': title}
 
@@ -181,22 +181,24 @@ def record_stream(chat_id, msg_id, url, duration_sec, title, output_file):
         active_recordings.pop(chat_id, None)
 
 def split_and_send(chat_id, msg_id, file_path, title, duration_sec):
-    file_size_mb = os.path.getsize(file_path)/(1024*1024)
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
     if file_size_mb <= MAX_SIZE_MB:
         send_file(chat_id, msg_id, file_path, title, duration_sec)
         os.remove(file_path)
         return
-    num_parts = math.ceil(file_size_mb/MAX_SIZE_MB)
-    base,ext = os.path.splitext(file_path)
+    num_parts = math.ceil(file_size_mb / MAX_SIZE_MB)
+    base, ext = os.path.splitext(file_path)
     for i in range(num_parts):
         part_file = f"{base}_part{i+1}{ext}"
-        cmd = ['ffmpeg','-y','-i',file_path,'-ss',str(i*duration_sec/num_parts),'-t',str(duration_sec/num_parts),'-c','copy',part_file]
+        cmd = ['ffmpeg', '-y', '-i', file_path, '-ss', str(i * duration_sec / num_parts),
+               '-t', str(duration_sec / num_parts), '-c', 'copy', part_file]
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        send_file(chat_id, msg_id, part_file, f"{title} Part {i+1}/{num_parts}", duration_sec/num_parts)
+        send_file(chat_id, msg_id, part_file, f"{title} Part {i+1}/{num_parts}", duration_sec / num_parts)
         os.remove(part_file)
 
 def send_file(chat_id, msg_id, file_path, caption, duration_sec):
     status_msg = bot.send_message(chat_id, f"⬆️ Uploading '{caption}'...")
+
     class Progress(io.BytesIO):
         def __init__(self, buf, chat_id, msg_id):
             super().__init__(buf)
@@ -205,11 +207,31 @@ def send_file(chat_id, msg_id, file_path, caption, duration_sec):
             self.total = len(buf)
             self.read_bytes = 0
             self.last_update = 0
-        def read(self,n=-1):
+
+        def read(self, n=-1):
             chunk = super().read(n)
             self.read_bytes += len(chunk)
             now = time.time()
             if now - self.last_update > 2:
                 self.last_update = now
-                percent = (self.read_bytes/self.total)*100
-                bar = '█'*int(percent/10)+'░'*(10-int(percent/10
+                percent = (self.read_bytes / self.total) * 100
+                bar = '█' * int(percent / 10) + '░' * (10 - int(percent / 10))
+                try:
+                    safe_edit_message(
+                        f"⬆️ Uploading {caption}\n📊 {percent:.1f}% [{bar}]",
+                        self.chat_id,
+                        status_msg.message_id
+                    )
+                except:
+                    pass
+            return chunk
+
+    with open(file_path, 'rb') as f:
+        data = f.read()
+    progress_file = Progress(data, chat_id, msg_id)
+    bot.send_video(chat_id, progress_file, caption=f"🎥 {caption}")
+    safe_edit_message("✅ Upload complete!", chat_id, status_msg.message_id)
+
+# ---------------- START BOT ----------------
+print("🤖 Bot started!")
+bot.infinity_polling()
