@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# ShitijBot — Fixed IPTV Recorder for VPS/Termux
+# ShitijBot — Fully Working IPTV Recorder with Safe Upload
 
 import os
 import time
 import json
 import threading
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 import telebot
 
 # ---------------- CONFIG ----------------
@@ -14,7 +14,8 @@ BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
 ADMIN_ID = 6403142441
 BOT_NAME = "Shitij𝔹ot"
 WORKDIR = "/root/Shitijbot"
-SPLIT_SECONDS = 5 * 60  # 5-minute chunk
+SPLIT_SECONDS = 60  # 1-minute chunks for Telegram
+MAX_CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB approx for Telegram
 # -----------------------------------------
 
 os.makedirs(WORKDIR, exist_ok=True)
@@ -48,7 +49,7 @@ def start_cmd(msg):
         f"👋 Welcome to *{BOT_NAME}*\n\n"
         "📌 Usage:\n`/record <url> <duration_HH:MM:SS> <title>`\n\n"
         "📝 Example:\n`/record https://example.com/live.m3u8 00:00:10 Testing`\n\n"
-        "⏰ Records immediately and auto-splits 5-min chunks."
+        "⏰ Records immediately and auto-splits chunks for safe Telegram upload."
     )
 
 
@@ -65,7 +66,7 @@ def help_cmd(msg):
 @bot.message_handler(commands=["addadmin"])
 def addadmin_cmd(msg):
     if not is_admin(msg.from_user.id):
-        bot.reply_to(msg, "❌ Only admins can add admins.")
+        bot.reply_to(msg, "❌ केवल admin ही admin जोड़ सकते हैं।")
         return
     parts = msg.text.strip().split()
     if len(parts) != 2:
@@ -84,7 +85,7 @@ def addadmin_cmd(msg):
 @bot.message_handler(commands=["record"])
 def record_cmd(msg):
     if not is_admin(msg.from_user.id):
-        bot.reply_to(msg, "❌ Only admins can start recordings.")
+        bot.reply_to(msg, "❌ केवल admin ही recording शुरू कर सकते हैं।")
         return
     parts = msg.text.strip().split(maxsplit=3)
     if len(parts) < 4:
@@ -103,41 +104,36 @@ def record_cmd(msg):
         bot.reply_to(msg, "⚠️ Duration must be in HH:MM:SS format and > 0")
         return
 
-    start_dt = datetime.now()
-    end_dt = start_dt + timedelta(seconds=duration)
-
     bot.reply_to(
         msg,
         f"🎬 *Recording Started!*\n\n"
         f"🎥 *Title:* {title}\n"
         f"🔗 *URL:* {url}\n"
-        f"⏱ *Duration:* {duration//60} min {duration%60} sec\n"
-        f"✂️ Auto-split every 5 min for safe upload.\n⚡ Live progress will be sent."
+        f"⏱ Duration: {duration//60} min {duration%60} sec\n"
+        f"✂️ Auto-split into safe chunks for Telegram."
     )
 
     threading.Thread(
         target=recording_and_upload,
-        args=(url, start_dt, end_dt, title, msg.chat.id, duration),
-        daemon=True,
+        args=(url, duration, title, msg.chat.id),
+        daemon=True
     ).start()
 
 
 # ---------------- RECORDING ENGINE ----------------
-def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
+def recording_and_upload(url, duration, title, chat_id):
     safe_title = "".join(c if c.isalnum() or c in " _-." else "_" for c in title)[:70]
-    out_base = os.path.join(WORKDIR, f"{safe_title}_{start_dt.strftime('%Y%m%d_%H%M%S')}")
-    raw_file = f"{out_base}.mp4"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    raw_file = os.path.join(WORKDIR, f"{safe_title}_{timestamp}.mp4")
 
-    bot.send_message(chat_id, f"▶️ Started recording *{title}* for {duration//60} m {duration%60} s...")
-
-    # Start ffmpeg recording
+    # Record
+    bot.send_message(chat_id, f"▶️ Recording *{title}* for {duration} sec...")
     proc = subprocess.Popen(
         ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", url, "-t", str(duration), "-c", "copy", raw_file]
     )
 
-    # Live progress (one message updated)
-    progress_msg = bot.send_message(chat_id, "📊 Recording… 0% [░░░░░░░░░░░░░░░░░░░░] 0s/{duration}s")
     start_time = time.time()
+    progress_msg = bot.send_message(chat_id, "📊 Recording… 0%")
     while proc.poll() is None:
         elapsed = int(time.time() - start_time)
         percent = min(100, int(elapsed * 100 / duration))
@@ -146,7 +142,7 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
             bot.edit_message_text(f"📊 Recording… {percent}% [{bar}] ({elapsed}s/{duration}s)", chat_id, progress_msg.message_id)
         except:
             pass
-        time.sleep(3)
+        time.sleep(2)
 
     if proc.returncode != 0:
         bot.send_message(chat_id, f"⚠️ ffmpeg exited with code {proc.returncode}")
@@ -154,8 +150,8 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
 
     bot.send_message(chat_id, f"✅ Recording completed: `{os.path.basename(raw_file)}`")
 
-    # Split into chunks
-    chunk_pattern = f"{out_base}_chunk_%03d.mp4"
+    # Split into small chunks for Telegram
+    chunk_pattern = os.path.join(WORKDIR, f"{safe_title}_{timestamp}_chunk_%03d.mp4")
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", raw_file,
          "-c", "copy", "-f", "segment", "-segment_time", str(SPLIT_SECONDS),
@@ -164,43 +160,37 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
     )
 
     chunks = sorted([os.path.join(WORKDIR, f) for f in os.listdir(WORKDIR)
-                     if f.startswith(os.path.basename(out_base + "_chunk_")) and f.endswith(".mp4")])
+                     if f.startswith(os.path.basename(f"{safe_title}_{timestamp}_chunk_")) and f.endswith(".mp4")])
 
     if not chunks:
         chunks = [raw_file]
 
     bot.send_message(chat_id, f"📦 Uploading {len(chunks)} part(s)...")
 
-    def upload_chunk(fpath, part_no, total_parts):
-        try:
-            msg = bot.send_message(chat_id, f"⬆️ Uploading part {part_no}/{total_parts}...")
-            with open(fpath, "rb") as vid:
-                bot.send_video(chat_id, vid, caption=f"{title} — Part {part_no}/{total_parts}")
-            bot.edit_message_text(f"✅ Uploaded part {part_no}/{total_parts}", chat_id, msg.message_id)
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Upload failed: {e}")
-        finally:
-            if os.path.exists(fpath):
-                os.remove(fpath)
-
-    threads = []
+    # Upload each chunk safely
     for i, fpath in enumerate(chunks, 1):
-        t = threading.Thread(target=upload_chunk, args=(fpath, i, len(chunks)))
-        t.start()
-        threads.append(t)
+        success = False
+        for attempt in range(3):
+            try:
+                with open(fpath, "rb") as vid:
+                    bot.send_video(chat_id, vid, caption=f"{title} — Part {i}/{len(chunks)}")
+                success = True
+                break
+            except Exception as e:
+                time.sleep(2)
+        if not success:
+            bot.send_message(chat_id, f"❌ Failed to upload part {i}")
+        if os.path.exists(fpath):
+            os.remove(fpath)
 
-    # Also remove raw_file
+    # Remove raw file if exists
     if os.path.exists(raw_file):
         os.remove(raw_file)
 
-    # Wait for all uploads
-    for t in threads:
-        t.join()
-
-    bot.send_message(chat_id, "🗑️ All files uploaded and deleted locally ✅")
+    bot.send_message(chat_id, "🗑️ सभी files upload हो गए और local से delete कर दिए गए ✅")
 
 
 # ---------------- RUN BOT ----------------
 if __name__ == "__main__":
-    print(f"🚀 {BOT_NAME} is running...")
+    print(f"🚀 {BOT_NAME} चल रहा है...")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
