@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ShitijBot — Full IPTV Recorder for VPS/Termux
+# ShitijBot — Advanced Duration-Based IPTV Recorder with Upload Progress
 
 import os
 import time
@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 import telebot
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"  # Your bot token
-ADMIN_ID = 6403142441  # Your Telegram ID
+BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
+ADMIN_ID = 6403142441
 BOT_NAME = "Shitij𝔹ot"
 WORKDIR = "/root/Shitijbot"
-SPLIT_SECONDS = 5 * 60  # 5-minute split
+SPLIT_SECONDS = 5 * 60  # 5-min chunks
 # -----------------------------------------
 
 os.makedirs(WORKDIR, exist_ok=True)
@@ -23,10 +23,7 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 ADMINS_FILE = os.path.join(WORKDIR, "admins.json")
 if os.path.exists(ADMINS_FILE):
     with open(ADMINS_FILE, "r") as f:
-        try:
-            ADMINS = set(json.load(f))
-        except:
-            ADMINS = {ADMIN_ID}
+        ADMINS = set(json.load(f))
 else:
     ADMINS = {ADMIN_ID}
 
@@ -40,27 +37,15 @@ def is_admin(uid):
     return uid in ADMINS
 
 
-def parse_time_pair(start, end):
-    """Parses HH:MM into datetime objects."""
-    now = datetime.now()
-    st = datetime.strptime(start, "%H:%M")
-    en = datetime.strptime(end, "%H:%M")
-    start_dt = now.replace(hour=st.hour, minute=st.minute, second=0, microsecond=0)
-    end_dt = now.replace(hour=en.hour, minute=en.minute, second=0, microsecond=0)
-    if end_dt <= start_dt:
-        end_dt += timedelta(days=1)
-    return start_dt, end_dt
-
-
 # ---------------- COMMANDS ----------------
 @bot.message_handler(commands=["start"])
 def start_cmd(msg):
     bot.reply_to(
         msg,
         f"👋 Welcome to *{BOT_NAME}*\n\n"
-        "📌 Usage:\n`/record <url> <start_HH:MM> <end_HH:MM> <title>`\n\n"
-        "📝 Example:\n`/record https://example.com/live.m3u8 20:30 21:15 Ramayan_HD`\n\n"
-        "⏰ Records from 8:30 PM to 9:15 PM and auto-splits 5-min chunks."
+        "📌 Usage:\n`/record <title> <url> <HH:MM:SS>`\n\n"
+        "📝 Example:\n`/record testing http://example.com/live.m3u8 00:10:00`\n"
+        "⏰ Records immediately for given duration and auto-splits 5-min chunks."
     )
 
 
@@ -69,7 +54,7 @@ def help_cmd(msg):
     bot.reply_to(
         msg,
         "🆘 *Help Guide*\n\n"
-        "Use:\n`/record <url> <start_HH:MM> <end_HH:MM> <title>`\n\n"
+        "Use:\n`/record <title> <url> <HH:MM:SS>`\n\n"
         "Admin only commands:\n`/addadmin <user_id>`",
     )
 
@@ -98,67 +83,64 @@ def record_cmd(msg):
     if not is_admin(msg.from_user.id):
         bot.reply_to(msg, "❌ Only admins can schedule recordings.")
         return
-    parts = msg.text.strip().split(maxsplit=4)
-    if len(parts) < 5:
-        bot.reply_to(msg, "📌 Usage: /record <url> <start_HH:MM> <end_HH:MM> <title>")
+    parts = msg.text.strip().split(maxsplit=3)
+    if len(parts) < 4:
+        bot.reply_to(msg, "📌 Usage: /record <title> <url> <HH:MM:SS>")
         return
 
-    _, url, st, en, title = parts
+    _, title, url, dur_str = parts
+
+    # parse duration HH:MM:SS
     try:
-        start_dt, end_dt = parse_time_pair(st, en)
-    except ValueError as e:
-        bot.reply_to(msg, f"⚠️ Error: {e}")
+        h, m, s = map(int, dur_str.strip().split(":"))
+        duration = h * 3600 + m * 60 + s
+        if duration <= 0:
+            raise ValueError
+    except Exception:
+        bot.reply_to(msg, "⚠️ Duration must be in HH:MM:SS and > 0")
         return
 
-    duration = int((end_dt - start_dt).total_seconds())
+    start_dt = datetime.now()
+    end_dt = start_dt + timedelta(seconds=duration)
+
     bot.reply_to(
         msg,
-        f"🎬 *Recording Scheduled!*\n\n"
+        f"🎬 *Recording Started!*\n\n"
         f"🎥 *Title:* {title}\n"
         f"🔗 *URL:* {url}\n"
-        f"🕒 *Start:* {start_dt.strftime('%d %b %Y • %I:%M %p')}\n"
-        f"🕒 *End:* {end_dt.strftime('%d %b %Y • %I:%M %p')}\n"
         f"⏱ *Duration:* {duration//60} min {duration%60} sec\n"
-        f"✂️ Auto-split every 5 min for safe upload.\n⚡ Live progress will be sent."
+        f"✂️ Auto-split every 5 min for safe upload.\n\n⚡ Live progress will be sent."
     )
 
     threading.Thread(
-        target=schedule_recording,
-        args=(url, start_dt, end_dt, title, msg.chat.id),
+        target=recording_and_upload,
+        args=(url, start_dt, end_dt, title, msg.chat.id, duration),
         daemon=True,
     ).start()
 
 
 # ---------------- RECORDING ENGINE ----------------
-def schedule_recording(url, start_dt, end_dt, title, chat_id):
-    wait = (start_dt - datetime.now()).total_seconds()
-    if wait > 0:
-        bot.send_message(chat_id, f"⏳ Waiting {int(wait)}s until {start_dt.strftime('%I:%M %p')}")
-        time.sleep(wait)
-    try:
-        recording_and_upload(url, start_dt, end_dt, title, chat_id)
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Recording failed: {e}")
-
-
-def recording_and_upload(url, start_dt, end_dt, title, chat_id):
+def recording_and_upload(url, start_dt, end_dt, title, chat_id, duration):
     safe_title = "".join(c if c.isalnum() or c in " _-." else "_" for c in title)[:70]
     out_base = os.path.join(WORKDIR, f"{safe_title}_{start_dt.strftime('%Y%m%d_%H%M%S')}")
     raw_file = f"{out_base}.mp4"
-    duration = int((end_dt - start_dt).total_seconds())
 
     bot.send_message(chat_id, f"▶️ Started recording *{title}* for {duration//60} m {duration%60} s...")
 
-    proc = subprocess.Popen(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                             "-i", url, "-t", str(duration), "-c", "copy", raw_file])
+    # Start ffmpeg recording
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", url, "-t", str(duration), "-c", "copy", raw_file]
+    proc = subprocess.Popen(cmd)
 
+    # Live progress updates
     start_time = time.time()
-    last_msg_time = 0
+    last_update = 0
     while proc.poll() is None:
         elapsed = int(time.time() - start_time)
-        if elapsed - last_msg_time >= 15:
-            bot.send_message(chat_id, f"📊 Recording… {elapsed}s elapsed")
-            last_msg_time = elapsed
+        percent = min(100, int(elapsed * 100 / duration))
+        if elapsed - last_update >= 5:
+            bar = "█" * (percent // 5) + "░" * (20 - percent // 5)
+            bot.send_message(chat_id, f"📊 Recording… {percent}% [{bar}] ({elapsed}s/{duration}s)")
+            last_update = elapsed
         time.sleep(1)
 
     if proc.returncode != 0:
@@ -167,38 +149,46 @@ def recording_and_upload(url, start_dt, end_dt, title, chat_id):
 
     bot.send_message(chat_id, f"✅ Recording completed: `{os.path.basename(raw_file)}`")
 
-    # Split into chunks
+    # Generate thumbnail at 10% duration
+    thumb_file = f"{out_base}_thumb.jpg"
+    thumb_time = max(1, duration // 10)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", raw_file, "-ss", str(thumb_time), "-vframes", "1", thumb_file],
+        check=False,
+    )
+
+    # Split into 5-min chunks
     chunk_pattern = f"{out_base}_chunk_%03d.mp4"
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", raw_file,
          "-c", "copy", "-f", "segment", "-segment_time", str(SPLIT_SECONDS),
          "-reset_timestamps", "1", chunk_pattern],
-        check=True
+        check=True,
     )
 
     chunks = sorted([os.path.join(WORKDIR, f) for f in os.listdir(WORKDIR)
-                     if f.startswith(os.path.basename(out_base + "_chunk_")) and f.endswith(".mp4")])
+                     if f.startswith(os.path.basename(out_base + "_chunk_"))])
 
     if not chunks:
         chunks = [raw_file]
 
     bot.send_message(chat_id, f"📦 Uploading {len(chunks)} part(s)...")
 
+    # Upload each chunk with progress
     for i, fpath in enumerate(chunks, 1):
         try:
-            msg = bot.send_message(chat_id, f"⬆️ Uploading part {i}/{len(chunks)}...")
+            msg_upload = bot.send_message(chat_id, f"⬆️ Uploading part {i}/{len(chunks)}...")
+            file_size = os.path.getsize(fpath)
             with open(fpath, "rb") as vid:
-                bot.send_video(chat_id, vid, caption=f"{title} — Part {i}/{len(chunks)}")
-            bot.edit_message_text(f"✅ Uploaded part {i}/{len(chunks)}", chat_id, msg.message_id)
+                bot.send_video(chat_id, vid, caption=f"{title} — Part {i}/{len(chunks)}", thumb=open(thumb_file, "rb") if os.path.exists(thumb_file) else None)
+            bot.edit_message_text(f"✅ Uploaded part {i}/{len(chunks)}", chat_id, msg_upload.message_id)
         except Exception as e:
             bot.send_message(chat_id, f"❌ Upload failed: {e}")
 
-    for fpath in chunks + [raw_file]:
-        if os.path.exists(fpath):
-            try:
-                os.remove(fpath)
-            except:
-                pass
+    # Cleanup
+    for f in chunks + [raw_file, thumb_file]:
+        if os.path.exists(f):
+            os.remove(f)
 
     bot.send_message(chat_id, "🗑️ Local files deleted after upload ✅")
 
