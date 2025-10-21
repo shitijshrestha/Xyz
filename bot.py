@@ -14,7 +14,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
+BOT_TOKEN = "7994446557:AAFa6TdlfByY76o22j9D6nhtq-Lmg2U13uc"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=10)
 
 # Admins & approval
