@@ -2,7 +2,6 @@ import telebot
 import subprocess
 import threading
 import os
-import time
 from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
@@ -14,9 +13,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 PERMANENT_ADMIN = 6403142441  # Replace with your Telegram ID
 ADMINS = {PERMANENT_ADMIN}
 APPROVED_USERS = set()
-
-# Dump Channel
-DUMP_CHANNEL_ID = -1002627919828
 
 # ---------------- DECORATORS ----------------
 def admin_only(func):
@@ -42,14 +38,14 @@ def approved_only(func):
 # ---------------- COMMANDS ----------------
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "👋 Welcome! Use /help to see commands.")
+    bot.reply_to(message, "👋 Welcome! Use /help to see available commands.")
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
     help_text = """
 📌 Commands:
 
-/record <url> <duration> <title> - Record video
+/record <url> <duration (hh:mm:ss)> <title> - Record a video and send directly to you
 /request - Request access to use bot
 /help - Show this message
 """
@@ -62,7 +58,7 @@ def request_access(message):
     if user_id in APPROVED_USERS or user_id in ADMINS:
         bot.reply_to(message, "✅ You already have access.")
         return
-    bot.reply_to(message, "✅ Request sent to admins for approval.")
+    bot.reply_to(message, "✅ Your request has been sent to admins.")
     for admin_id in ADMINS:
         try:
             bot.send_message(admin_id, f"User {message.from_user.first_name} ({user_id}) requested access.\nUse /approve {user_id} to approve.")
@@ -115,18 +111,17 @@ def record(message):
 
     bot.reply_to(message, f"🎬 Recording started!\n🎥 Title: {title}\n🔗 URL: {url}\n⏱ Duration: {duration}")
 
-    # Run ffmpeg recording
     def run_record():
         cmd = f"ffmpeg -y -i \"{url}\" -t {duration} -c copy \"{file_name}\""
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         process.communicate()
 
         if os.path.exists(file_name):
-            # Upload to dump channel
-            bot.send_message(message.chat.id, "✅ Recording finished. Uploading...")
+            # Upload directly to user
             try:
                 with open(file_name, "rb") as video:
-                    bot.send_video(DUMP_CHANNEL_ID, video, caption=f"🎬 {title}")
+                    bot.send_video(message.chat.id, video, caption=f"🎬 {title}")
+                bot.send_message(message.chat.id, "✅ Recording finished and sent to you.")
             except ApiTelegramException as e:
                 bot.reply_to(message, f"❌ Upload failed: {e}")
             finally:
