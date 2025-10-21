@@ -4,7 +4,6 @@ import threading
 import os
 import time
 import math
-import io
 from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
@@ -12,11 +11,12 @@ from telebot.apihelper import ApiTelegramException
 BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
-PERMANENT_ADMINS = [6403142441]  # Your Telegram ID
+PERMANENT_ADMINS = [6403142441]
 admin_ids = set(PERMANENT_ADMINS)
 pending_users = set()
 
-MAX_SIZE_MB = 50  # Telegram video part limit in MB
+GROUP_CHAT_ID = -1002323987687
+MAX_SIZE_MB = 50
 active_recordings = {}  # chat_id -> {msg_id: process_info}
 
 # ---------------- DECORATORS ----------------
@@ -58,14 +58,14 @@ def start(message):
 @bot.message_handler(commands=['help'])
 @approved_only
 def help_command(message):
-    text = """
-📌 **Available Commands**
+    text = f"""
+📌 **Available Commands** (Works in group {GROUP_CHAT_ID})
 
 /start - Start bot  
 /help - Show this help  
 /status - Bot status  
 /myrecordings - Your active recordings  
-/record <URL> <hh:mm:ss> <title> - Record stream  
+/record <URL> <hh:mm:ss|seconds> <title> - Record stream (default 10 sec)  
 /cancel - Cancel a recording (reply to recording msg)  
 /screenshot <URL> - Take single screenshot  
 
@@ -163,20 +163,31 @@ def screenshot(message):
 @approved_only
 def record(message):
     args = message.text.split()
-    if len(args) < 4:
-        bot.reply_to(message, "Usage: /record <URL> <hh:mm:ss> <title>")
+    if len(args) < 2:
+        bot.reply_to(message, "Usage: /record <URL> <hh:mm:ss|seconds> <title> (default 10 sec)")
         return
     url = args[1]
-    try:
-        h, m, s = map(int, args[2].split(":"))
-        duration_sec = h * 3600 + m * 60 + s
-    except:
-        bot.reply_to(message, "Invalid duration format. Use hh:mm:ss")
-        return
-    title = " ".join(args[3:])
+
+    # Default duration 10 sec
+    duration_sec = 10
+    title = "Untitled"
+    if len(args) >= 3:
+        # Check if hh:mm:ss format
+        try:
+            if ':' in args[2]:
+                h, m, s = map(int, args[2].split(":"))
+                duration_sec = h * 3600 + m * 60 + s
+            else:
+                duration_sec = int(args[2])
+        except:
+            bot.reply_to(message, "Invalid duration. Use hh:mm:ss or seconds")
+            return
+    if len(args) >= 4:
+        title = " ".join(args[3:])
+    
     timestamp = int(time.time())
     output_file = f"rec_{message.chat.id}_{timestamp}.mp4"
-    sent_msg = bot.reply_to(message, f"🎬 Recording '{title}' for {args[2]} started...")
+    sent_msg = bot.reply_to(message, f"🎬 Recording '{title}' for {duration_sec}s started...")
     msg_id = sent_msg.message_id
     threading.Thread(target=record_stream, args=(message.chat.id, msg_id, url, duration_sec, title, output_file)).start()
 
@@ -202,8 +213,17 @@ def record_stream(chat_id, msg_id, url, duration_sec, title, output_file):
     cmd = ['ffmpeg', '-y', '-i', url, '-t', str(duration_sec), '-c', 'copy', output_file]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     active_recordings[chat_id][msg_id] = {'proc': proc, 'title': title}
-    proc.wait()
 
+    start_time = time.time()
+    while proc.poll() is None:
+        elapsed = int(time.time() - start_time)
+        percent = min(elapsed / duration_sec * 100, 100)
+        bar = '█' * int(percent / 10) + '░' * (10 - int(percent / 10))
+        safe_edit_message(f"🎬 Recording '{title}'\n📊 {percent:.1f}% [{bar}]\n⏰ Elapsed: {elapsed}s",
+                          chat_id, msg_id)
+        time.sleep(1)
+
+    proc.wait()
     if os.path.exists(output_file):
         safe_edit_message(f"✅ Recording finished. Uploading...", chat_id, msg_id)
         split_and_send(chat_id, msg_id, output_file, title, duration_sec)
@@ -217,7 +237,7 @@ def record_stream(chat_id, msg_id, url, duration_sec, title, output_file):
 def split_and_send(chat_id, msg_id, file_path, title, duration_sec):
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
     if file_size_mb <= MAX_SIZE_MB:
-        send_file(chat_id, msg_id, file_path, title, duration_sec)
+        send_file(chat_id, msg_id, file_path, title)
         os.remove(file_path)
         return
     num_parts = math.ceil(file_size_mb / MAX_SIZE_MB)
@@ -227,16 +247,15 @@ def split_and_send(chat_id, msg_id, file_path, title, duration_sec):
         cmd = ['ffmpeg', '-y', '-i', file_path, '-ss', str(i * duration_sec / num_parts),
                '-t', str(duration_sec / num_parts), '-c', 'copy', part_file]
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        send_file(chat_id, msg_id, part_file, f"{title} Part {i+1}/{num_parts}", duration_sec / num_parts)
+        send_file(chat_id, msg_id, part_file, f"{title} Part {i+1}/{num_parts}")
         os.remove(part_file)
 
-def send_file(chat_id, msg_id, file_path, caption, duration_sec):
+def send_file(chat_id, msg_id, file_path, caption):
     status_msg = bot.send_message(chat_id, f"⬆️ Uploading '{caption}'...")
-
     with open(file_path, 'rb') as f:
         bot.send_video(chat_id, f, caption=f"🎥 {caption}")
     safe_edit_message("✅ Upload complete!", chat_id, status_msg.message_id)
 
 # ---------------- START BOT ----------------
-print("🤖 Bot started!")
+print("🤖 Bot started! Running in group", GROUP_CHAT_ID)
 bot.infinity_polling()
