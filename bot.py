@@ -3,217 +3,130 @@ import subprocess
 import threading
 import os
 import time
-from datetime import datetime, timedelta
+import datetime
 from telebot.apihelper import ApiTelegramException
-from functools import wraps
+import math
 
 # ---------------- CONFIG ----------------
 BOT_TOKEN = "7994446557:AAEZZ4ffk2-a2hLBi-rJDJywUD1HVCVm1zU"
-bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
+DUMP_CHANNEL_ID = -1002627919828  # Dump channel
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2GB limit
 
-PERMANENT_ADMIN = 6403142441
-approved_users = set()
-pending_users = set()
-DUMP_CHANNEL_ID = -1002627919828
-
-# ---------------- DECORATORS ----------------
-def admin_only(func):
-    @wraps(func)
-    def wrapper(message, *args, **kwargs):
-        if message.from_user.id == PERMANENT_ADMIN:
-            return func(message, *args, **kwargs)
-        else:
-            bot.reply_to(message, "⛔ Only the main admin can use this command.")
-    return wrapper
-
-
-def approved_only(func):
-    @wraps(func)
-    def wrapper(message, *args, **kwargs):
-        uid = message.from_user.id
-        if uid == PERMANENT_ADMIN or uid in approved_users:
-            return func(message, *args, **kwargs)
-        elif uid in pending_users:
-            bot.reply_to(message, "⏳ Your access request is pending admin approval.")
-        else:
-            pending_users.add(uid)
-            bot.reply_to(message, "✋ You are not approved yet. Admin has been notified.")
-            bot.send_message(
-                PERMANENT_ADMIN,
-                f"🆕 New user request:\n👤 {message.from_user.first_name}\n🆔 ID: {uid}\nUse /approve {uid} to approve."
-            )
-    return wrapper
-
-
-def safe_edit(chat_id, msg_id, text):
+# ---------------- HELPERS ----------------
+def time_to_seconds(t):
+    """Convert 00:10:00 or 600 -> seconds"""
     try:
-        if len(text) > 4000:
-            text = text[:3990] + "..."
-        bot.edit_message_text(text, chat_id, msg_id)
-    except ApiTelegramException:
-        pass
-
-
-# ---------------- COMMANDS ----------------
-@bot.message_handler(commands=['start'])
-def start(message):
-    uid = message.from_user.id
-    if uid == PERMANENT_ADMIN or uid in approved_users:
-        bot.reply_to(message, "👋 Welcome! Use /help to see available commands.")
-    elif uid in pending_users:
-        bot.reply_to(message, "⏳ Your access request is pending admin approval.")
-    else:
-        pending_users.add(uid)
-        bot.reply_to(message, "✋ You are not approved yet. Admin has been notified.")
-        bot.send_message(
-            PERMANENT_ADMIN,
-            f"🆕 New user request:\n👤 {message.from_user.first_name}\n🆔 ID: {uid}\nUse /approve {uid} to approve."
-        )
-
-
-@bot.message_handler(commands=['help'])
-@approved_only
-def help_command(message):
-    text = """
-📘 **Available Commands:**
-/record <url> <duration> <title> — Record stream
-/status — Show bot status
-/cancel — Cancel a recording
-
-🛠 **Admin Only:**
-/approve <user_id> — Approve user
-"""
-    bot.reply_to(message, text)
-
-
-@bot.message_handler(commands=['approve'])
-@admin_only
-def approve_user(message):
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "Usage: /approve <user_id>")
-        return
-    try:
-        user_id = int(args[1])
+        if ":" in t:
+            h, m, s = t.split(":")
+            return int(h) * 3600 + int(m) * 60 + int(s)
+        return int(t)
     except:
-        bot.reply_to(message, "Invalid user ID format.")
+        return 10  # fallback
+
+def split_and_upload(filename, title):
+    """Split recorded video into 2GB chunks and upload each"""
+    if not os.path.exists(filename):
         return
 
-    if user_id in pending_users:
-        pending_users.remove(user_id)
-        approved_users.add(user_id)
-        bot.reply_to(message, f"✅ Approved user: {user_id}")
-        bot.send_message(user_id, "✅ You’ve been approved! Use /record to start recording.")
-    else:
-        bot.reply_to(message, "⚠️ This user is not pending approval.")
-
-
-# ---------------- RECORDING SYSTEM ----------------
-active_rec = {}
-
-@bot.message_handler(commands=['record'])
-@approved_only
-def record(message):
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "Usage: /record <url> <duration> <title>")
+    # Check total file size
+    total_size = os.path.getsize(filename)
+    if total_size <= MAX_SIZE_BYTES:
+        # Single upload
+        size_mb = total_size / (1024 * 1024)
+        caption = f"📁 Filename: {filename}\n💾 File-Size: {size_mb:.2f} MB\n☎️ @Shitijbro"
+        with open(filename, "rb") as video:
+            bot.send_video(DUMP_CHANNEL_ID, video, caption=caption)
+        os.remove(filename)
         return
 
-    url = args[1]
-    duration = 10
-    title = "Untitled"
+    # Split using ffmpeg into chunks <2GB
+    # Estimate chunk duration proportionally
+    total_duration = float(subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename]
+    ).decode().strip())
+    num_chunks = math.ceil(total_size / MAX_SIZE_BYTES)
+    chunk_duration = total_duration / num_chunks
 
-    if len(args) >= 3:
-        try:
-            if ":" in args[2]:
-                h, m, s = map(int, args[2].split(":"))
-                duration = h * 3600 + m * 60 + s
-            else:
-                duration = int(args[2])
-        except:
-            bot.reply_to(message, "Invalid duration format.")
-            return
+    for i in range(num_chunks):
+        start_time = i * chunk_duration
+        chunk_file = f"{filename}_part{i+1}.mkv"
+        cmd = [
+            "./ffmpeg", "-y", "-i", filename,
+            "-ss", str(start_time), "-t", str(chunk_duration),
+            "-c", "copy", chunk_file
+        ]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    if len(args) >= 4:
-        title = " ".join(args[3:])
+        size_mb = os.path.getsize(chunk_file) / (1024 * 1024)
+        duration_str = str(datetime.timedelta(seconds=int(min(chunk_duration, total_duration - start_time))))
+        caption = f"📁 Filename: {chunk_file}\n⏱ Duration: {duration_str}\n💾 File-Size: {size_mb:.2f} MB\n☎️ @Shitijbro"
+        with open(chunk_file, "rb") as video:
+            bot.send_video(DUMP_CHANNEL_ID, video, caption=caption)
+        os.remove(chunk_file)
 
-    msg = bot.reply_to(message, f"🎬 Recording started: {title}\n⏱ Duration: {duration}s")
-    chat_id = message.chat.id
-    msg_id = msg.message_id
-    threading.Thread(target=record_process, args=(chat_id, msg_id, url, duration, title)).start()
+# ---------------- RECORD FUNCTION ----------------
+def record_stream(chat_id, url, duration_str, title):
+    duration = time_to_seconds(duration_str)
+    start_time = datetime.datetime.now().strftime("%H-%M-%S")
+    end_time = (datetime.datetime.now() + datetime.timedelta(seconds=duration)).strftime("%H-%M-%S")
+    date_now = datetime.datetime.now().strftime("%d-%m-%Y")
 
+    filename = f"Untitled.Direct Stream.{start_time}-{end_time}.{date_now}.IPTV.WEB-DL.@Shitijbro.mkv"
 
-def record_process(chat_id, msg_id, url, duration, title):
-    timestamp = int(time.time())
-    filename = f"record_{chat_id}_{timestamp}.mkv"
-    cmd = ["ffmpeg", "-y", "-i", url, "-t", str(duration), "-c", "copy", filename]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # Send start message
+    msg = bot.send_message(chat_id, f"🎬 Recording Started!\n🎥 <b>{title}</b>\n⏱ Duration: {duration_str}\n🔗 URL: {url}")
 
+    # Start ffmpeg process
+    cmd = ["./ffmpeg", "-y", "-i", url, "-t", str(duration), "-c", "copy", filename]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     start = time.time()
-    active_rec[(chat_id, msg_id)] = proc
-    while proc.poll() is None:
-        elapsed = time.time() - start
-        percent = min((elapsed / duration) * 100, 100)
-        bar = "█" * int(percent / 10) + "░" * (10 - int(percent / 10))
-        safe_edit(chat_id, msg_id, f"🎥 Recording {title}\n📊 {percent:.1f}% [{bar}]\n⏱ {int(elapsed)}s/{duration}s")
-        time.sleep(2)
 
-    proc.wait()
+    # Live progress update
+    while process.poll() is None:
+        elapsed = int(time.time() - start)
+        percent = min(100, (elapsed / duration) * 100)
+        filled = int(percent // 10)
+        bar = "█" * filled + "░" * (10 - filled)
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                text=f"🎥 Recording <b>{title}</b>\n📊 {percent:.1f}% [{bar}]\n⏱ {elapsed}s/{duration}s",
+                parse_mode="HTML"
+            )
+        except ApiTelegramException:
+            pass
+        time.sleep(5)
+
+    process.wait()
+    bot.send_message(chat_id, f"✅ Recording Finished. Uploading <b>{title}</b>...", parse_mode="HTML")
+
+    # Split into 2GB chunks if needed and upload
+    split_and_upload(filename, title)
+
+    # Delete original file
     if os.path.exists(filename):
-        safe_edit(chat_id, msg_id, "✅ Recording complete. Uploading...")
-        upload_video(chat_id, filename, title, duration)
-    else:
-        safe_edit(chat_id, msg_id, "❌ Recording failed.")
+        os.remove(filename)
+    bot.send_message(chat_id, f"✅ Upload Complete for <b>{title}</b>", parse_mode="HTML")
 
-    del active_rec[(chat_id, msg_id)]
-
-
-def upload_video(chat_id, path, title, duration):
-    size_mb = os.path.getsize(path) / (1024 * 1024)
-    now = datetime.now()
-    end_time = now + timedelta(seconds=duration)
-    caption = (
-        f"📁 Filename: {title}.{now.strftime('%H-%M-%S')}-{end_time.strftime('%H-%M-%S')}.{now.strftime('%d-%m-%Y')}.IPTV.WEB-DL.@Shitijbro.mkv\n"
-        f"⏱ Duration: {duration//60}min {duration%60}sec\n"
-        f"💾 File Size: {size_mb:.2f} MB\n"
-        f"☎️ @Shitijbro"
-    )
-
+# ---------------- COMMAND HANDLER ----------------
+@bot.message_handler(commands=['record'])
+def record_handler(message):
     try:
-        with open(path, "rb") as video:
-            # Upload to user/chat
-            bot.send_video(chat_id, video, caption=caption)
-        with open(path, "rb") as video_dump:
-            # Upload to dump channel
-            bot.send_video(DUMP_CHANNEL_ID, video_dump, caption=caption)
-        bot.send_message(chat_id, "✅ Uploaded to you and dump channel successfully!")
+        args = message.text.split(" ", 3)
+        if len(args) < 3:
+            bot.reply_to(message, "❌ Usage:\n/record <url> <duration> <title>")
+            return
+        url = args[1]
+        duration_str = args[2]
+        title = args[3] if len(args) > 3 else "Untitled"
+
+        threading.Thread(target=record_stream, args=(message.chat.id, url, duration_str, title)).start()
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Upload failed: {e}")
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
-
-
-@bot.message_handler(commands=['cancel'])
-@approved_only
-def cancel_record(message):
-    if not message.reply_to_message:
-        bot.reply_to(message, "Reply to the recording message to cancel it.")
-        return
-
-    chat_id = message.chat.id
-    msg_id = message.reply_to_message.message_id
-    key = (chat_id, msg_id)
-
-    if key in active_rec:
-        proc = active_rec[key]
-        proc.terminate()
-        del active_rec[key]
-        bot.reply_to(message, "🛑 Recording cancelled.")
-    else:
-        bot.reply_to(message, "❌ No active recording found.")
-
+        bot.reply_to(message, f"⚠️ Error: {e}")
 
 # ---------------- START BOT ----------------
-print("🤖 IPTV Upload Bot started with Dump Channel upload enabled!")
+print("🤖 Bot Started. Listening for /record ...")
 bot.infinity_polling()
