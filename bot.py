@@ -8,7 +8,7 @@ from telebot.apihelper import ApiTelegramException
 import math
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAEZZ4ffk2-a2hLBi-rJDJywUD1HVCVm1zU"
+BOT_TOKEN = "7994446557:AAEB_sV9KQmSjlbFHrZ4y0hpd3Ldgi7bCI0"
 DUMP_CHANNEL_ID = -1002627919828  # Dump channel
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2GB limit
