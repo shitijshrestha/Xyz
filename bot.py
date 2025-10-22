@@ -8,7 +8,7 @@ import datetime
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHoC-lsN137MmZfVMHiTWHRXRBHCFlwCKA"
+BOT_TOKEN = "7994446557:AAFa6TdlfByY76o22j9D6nhtq-Lmg2U13uc"
 PERMANENT_ADMIN = 6403142441
 DUMP_CHANNEL_ID = -1002627919828
 SPLIT_SIZE_MB = 50
