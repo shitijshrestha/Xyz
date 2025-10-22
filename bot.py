@@ -171,7 +171,7 @@ def record_cmd(message):
             total_seconds = int(dparts[0])
 
         timestamp = datetime.datetime.now().strftime("%H-%M-%S.%d-%m-%Y")
-        filename = f"{title}.{timestamp}.IPTV.WEB-DL.mkv"
+        filename = f"{title}.{timestamp}.IPTV.WEB-DL.@Shitijbro.mkv"
         msg = bot.reply_to(message, f"🎬 Recording '{title}' for {hms_format(total_seconds)} started...")
         threading.Thread(target=record_stream, args=(message.chat.id, msg.message_id, url, total_seconds, title, filename)).start()
     except Exception as e:
