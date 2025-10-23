@@ -16,7 +16,7 @@ ADMIN_IDS = [6403142441, 7470440084]
 approved_users = set(ADMIN_IDS)
 pending_users = set()
 DUMP_CHANNEL_ID = -1002627919828
-SPLIT_SIZE_MB = 50
+SPLIT_SIZE_MB = 49
 active_recordings = {}  # chat_id -> msg_id -> info
 
 # ---------------- DECORATORS ----------------
