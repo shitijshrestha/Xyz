@@ -8,7 +8,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAFUdcVf18O0YkwOC0r9Rv4mvPGClCn6Z8s"
+BOT_TOKEN = "7994446557:AAEYKYKQtRnAl0_DDxGsY9illQKN83ONCNc"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
