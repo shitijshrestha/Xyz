@@ -8,7 +8,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHCJcHw3k768FfXeCS7a1ScRbgGVfh6PVY"
+BOT_TOKEN = "7994446557:7994446557:AAEKTe7_9lHIRc2wR4CVOJLyGCVjCFBmEww"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
@@ -16,7 +16,7 @@ ADMIN_IDS = [6403142441, 7470440084]
 approved_users = set(ADMIN_IDS)
 pending_users = set()
 DUMP_CHANNEL_ID = -1002627919828
-SPLIT_SIZE_MB = 49
+SPLIT_SIZE_MB = 48
 active_recordings = {}  # chat_id -> msg_id -> info
 
 # ---------------- DECORATORS ----------------
