@@ -8,7 +8,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHsSpUlBz94ES-eryyyuWHLXniGSQWOHkE"
+BOT_TOKEN = "7994446557:AAHR_ELrPLeSpbIrhREK67i6Izpy6BJ8xYw"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
@@ -16,7 +16,7 @@ ADMIN_IDS = [6403142441, 7470440084]
 approved_users = set(ADMIN_IDS)
 pending_users = set()
 DUMP_CHANNEL_ID = -1002627919828
-SPLIT_SIZE_MB = 49  # Telegram bot upload part size in MB
+SPLIT_SIZE_MB = 49  # MB per part
 active_recordings = {}  # chat_id -> msg_id -> info
 
 # ---------------- DECORATORS ----------------
@@ -56,53 +56,6 @@ def generate_thumbnail(video_file):
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return thumb_file if os.path.exists(thumb_file) else None
 
-# ---------------- RECORDING ----------------
-def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
-    if chat_id not in active_recordings:
-        active_recordings[chat_id] = {}
-    cmd = ["ffmpeg", "-y", "-i", url, "-t", str(total_seconds), "-c", "copy", output_file]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    active_recordings[chat_id][msg_id] = {'proc': proc, 'title': title, 'user_id': chat_id}
-
-    start_time = time.time()
-    while proc.poll() is None:
-        elapsed = int(time.time() - start_time)
-        if elapsed > total_seconds:
-            elapsed = total_seconds
-        percent = int((elapsed / total_seconds) * 100)
-        if percent > 100:
-            percent = 100
-        bar = "█" * (percent // 5) + "░" * (20 - (percent // 5))
-        safe_edit(
-            f"🎬 Recording Progress\n"
-            f"📊 {percent}% [{bar}]\n"
-            f"⏱ {hms_format(elapsed)} / {hms_format(total_seconds)}\n"
-            f"🎯 {title}",
-            chat_id, msg_id
-        )
-        time.sleep(2)
-
-    proc.wait()
-
-    if os.path.exists(output_file):
-        filesize_mb = os.path.getsize(output_file)/(1024*1024)
-        caption = f"📁 Filename: {os.path.basename(output_file)}\n⏱ Duration: {hms_format(total_seconds)}\n📦 File-Size: {filesize_mb:.2f} MB"
-        thumb = generate_thumbnail(output_file)
-
-        # Upload to user & dump channel part by part
-        split_and_send(output_file, caption, chat_id, thumb)
-        split_and_send(output_file, caption, DUMP_CHANNEL_ID, thumb)
-
-        # Cleanup
-        if os.path.exists(output_file):
-            os.remove(output_file)
-        if thumb and os.path.exists(thumb):
-            os.remove(thumb)
-
-    active_recordings[chat_id].pop(msg_id, None)
-    if not active_recordings[chat_id]:
-        active_recordings.pop(chat_id, None)
-
 # ---------------- UPLOAD FUNCTIONS ----------------
 def send_video(filepath, caption, chat_id, thumb=None):
     try:
@@ -112,7 +65,9 @@ def send_video(filepath, caption, chat_id, thumb=None):
                     bot.send_video(chat_id, video_file, caption=caption, thumb=thumb_file)
             else:
                 bot.send_video(chat_id, video_file, caption=caption)
+        print(f"[INFO] Uploaded {filepath} to chat {chat_id}")
     except Exception as e:
+        print(f"[ERROR] Upload failed {filepath}: {e}")
         bot.send_message(chat_id, f"❌ Upload failed: {e}")
 
 def split_and_send(filepath, caption, chat_id, thumb=None):
@@ -141,6 +96,42 @@ def retry_upload(file, caption, chat_id, thumb, retries=3):
         except:
             time.sleep(5)
 
+# ---------------- RECORDING ----------------
+def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
+    if chat_id not in active_recordings:
+        active_recordings[chat_id] = {}
+    cmd = ["ffmpeg", "-y", "-i", url, "-t", str(total_seconds), "-c", "copy", output_file]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    active_recordings[chat_id][msg_id] = {'proc': proc, 'title': title, 'user_id': chat_id}
+
+    start_time = time.time()
+    while proc.poll() is None:
+        elapsed = int(time.time() - start_time)
+        percent = int((elapsed / total_seconds) * 100) if total_seconds>0 else 0
+        if percent>100: percent=100
+        bar = "█"*(percent//5) + "░"*(20 - (percent//5))
+        safe_edit(f"🎬 Recording Progress\n📊 {percent}% [{bar}]\n⏱ {hms_format(elapsed)} / {hms_format(total_seconds)}\n🎯 {title}", chat_id, msg_id)
+        time.sleep(2)
+
+    proc.wait()
+    # Upload after recording
+    if os.path.exists(output_file):
+        filesize_mb = os.path.getsize(output_file)/(1024*1024)
+        caption = f"📁 {os.path.basename(output_file)}\n⏱ {hms_format(total_seconds)}\n📦 {filesize_mb:.2f} MB"
+        thumb = generate_thumbnail(output_file)
+
+        # User upload
+        split_and_send(output_file, caption, chat_id, thumb)
+        # Dump channel upload
+        split_and_send(output_file, caption, DUMP_CHANNEL_ID, thumb)
+
+        # Cleanup
+        if os.path.exists(output_file): os.remove(output_file)
+        if thumb and os.path.exists(thumb): os.remove(thumb)
+
+    active_recordings[chat_id].pop(msg_id, None)
+    if not active_recordings[chat_id]: active_recordings.pop(chat_id, None)
+
 # ---------------- COMMAND HANDLERS ----------------
 @bot.message_handler(commands=['start'])
 @admin_only
@@ -151,18 +142,11 @@ def start(message):
 @admin_only
 def help_cmd(message):
     text = """
-/record
-•
-📌 Usage: /record <URL> <HH:MM:SS> [optional_title]
-📝 Example:
-/record https://example.com/stream 00:10:00 MyVideo
-5-min chunks
-🔄 Automatic retry on failures
-
-/cancel - Cancel your recording
-/myrecordings - List active recordings
+/record <URL> <HH:MM:SS> <title> - Record stream
+/cancel - Cancel recording
+/myrecordings - List your recordings
 /allrecordings - List all recordings
-/broadcast <msg> - Send message to approved users
+/broadcast <msg> - Send to all approved users
 /approve <user_id> - Approve user
 """
     bot.reply_to(message, text)
@@ -171,20 +155,16 @@ def help_cmd(message):
 @admin_only
 def record_cmd(message):
     try:
-        parts = message.text.split(" ", 3)
-        if len(parts)<3:
-            return bot.reply_to(message, "Usage:\n/record <URL> <HH:MM:SS> [optional_title]")
+        parts = message.text.split(" ",3)
+        if len(parts)<3: return bot.reply_to(message, "Usage: /record <URL> <HH:MM:SS> <title>")
         url = parts[1]
         duration_str = parts[2]
         title = parts[3] if len(parts)>=4 else "Recording"
 
         dparts = duration_str.split(":")
-        if len(dparts)==3:
-            total_seconds = int(dparts[0])*3600 + int(dparts[1])*60 + int(dparts[2])
-        elif len(dparts)==2:
-            total_seconds = int(dparts[0])*60 + int(dparts[1])
-        else:
-            total_seconds = int(dparts[0])
+        if len(dparts)==3: total_seconds = int(dparts[0])*3600 + int(dparts[1])*60 + int(dparts[2])
+        elif len(dparts)==2: total_seconds = int(dparts[0])*60 + int(dparts[1])
+        else: total_seconds = int(dparts[0])
 
         timestamp = datetime.datetime.now().strftime("%H-%M-%S.%d-%m-%Y")
         filename = f"{title}.{timestamp}.IPTV.WEB-DL.@Shitijbro.mkv"
@@ -196,8 +176,7 @@ def record_cmd(message):
 @bot.message_handler(commands=['cancel'])
 @admin_only
 def cancel(message):
-    if not message.reply_to_message:
-        return bot.reply_to(message, "Reply to your recording message to cancel.")
+    if not message.reply_to_message: return bot.reply_to(message,"Reply to recording message to cancel.")
     chat_id = message.chat.id
     msg_id = message.reply_to_message.message_id
     if chat_id in active_recordings and msg_id in active_recordings[chat_id]:
@@ -206,10 +185,8 @@ def cancel(message):
             proc = active_recordings[chat_id][msg_id]['proc']
             proc.terminate()
             bot.reply_to(message, "❌ Your recording canceled.")
-        else:
-            bot.reply_to(message, "⛔ You can only cancel your own recording.")
-    else:
-        bot.reply_to(message, "No active recording found.")
+        else: bot.reply_to(message,"⛔ Only owner can cancel.")
+    else: bot.reply_to(message,"No active recording found.")
 
 @bot.message_handler(commands=['myrecordings'])
 @admin_only
@@ -220,16 +197,14 @@ def myrec(message):
         for msg_id, info in active_recordings[chat_id].items():
             if info.get('user_id') == message.from_user.id:
                 text += f"- {info['title']} (PID: {info['proc'].pid})\n"
-    else:
-        text = "No active recordings."
+    else: text = "No active recordings."
     bot.reply_to(message, text)
 
 @bot.message_handler(commands=['allrecordings'])
 @admin_only
 def allrec(message):
     total = sum(len(r) for r in active_recordings.values())
-    if total==0:
-        return bot.reply_to(message, "No active recordings.")
+    if total==0: return bot.reply_to(message, "No active recordings.")
     text = f"🎬 All active recordings ({total}):\n"
     for chat_id, recs in active_recordings.items():
         text+=f"\nChat {chat_id}:\n"
@@ -241,8 +216,7 @@ def allrec(message):
 @admin_only
 def approve(message):
     args = message.text.split()
-    if len(args)<2:
-        return bot.reply_to(message, "Usage: /approve <user_id>")
+    if len(args)<2: return bot.reply_to(message, "Usage: /approve <user_id>")
     try:
         uid = int(args[1])
         approved_users.add(uid)
@@ -256,12 +230,10 @@ def approve(message):
 @admin_only
 def broadcast(message):
     args = message.text.split(" ",1)
-    if len(args)<2:
-        return bot.reply_to(message, "Usage: /broadcast <message>")
+    if len(args)<2: return bot.reply_to(message, "Usage: /broadcast <message>")
     msg = args[1]
     for uid in approved_users:
-        try:
-            bot.send_message(uid, f"📢 Broadcast:\n\n{msg}")
+        try: bot.send_message(uid, f"📢 Broadcast:\n\n{msg}")
         except: pass
     bot.reply_to(message, "✅ Broadcast sent to all approved users.")
 
