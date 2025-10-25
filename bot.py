@@ -8,7 +8,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAEKTe7_9lHIRc2wR4CVOJLyGCVjCFBmEww"
+BOT_TOKEN = "7994446557:AAEK9CFN5CCdhRlEIWW4L3wq6HT48OJwI2Y"  # Latest token
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
@@ -16,7 +16,7 @@ ADMIN_IDS = [6403142441, 7470440084]
 approved_users = set(ADMIN_IDS)
 pending_users = set()
 DUMP_CHANNEL_ID = -1002627919828
-SPLIT_SIZE_MB = 48
+SPLIT_SIZE_MB = 49  # Telegram safe upload size
 active_recordings = {}  # chat_id -> msg_id -> info
 
 # ---------------- DECORATORS ----------------
@@ -31,9 +31,9 @@ def admin_only(func):
                 pending_users.add(uid)
                 for admin in ADMIN_IDS:
                     bot.send_message(admin, f"🛡 User @{message.from_user.username} ({uid}) requests access.")
-                bot.reply_to(message, "⏳ Your request has been sent to admins for approval.")
+                bot.reply_to(message, "⏳ Aapka request admin ko bhej diya gaya hai.")
             else:
-                bot.reply_to(message, "⏳ Your request is pending admin approval.")
+                bot.reply_to(message, "⏳ Aapka request admin approval me pending hai.")
     return wrapped
 
 def safe_edit(text, chat_id, msg_id):
@@ -85,20 +85,11 @@ def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
         )
         thumb = generate_thumbnail(output_file)
 
-        # Split if needed
-        if filesize_mb > SPLIT_SIZE_MB:
-            split_and_send(output_file, caption, chat_id, thumb)
-        else:
-            send_video(output_file, caption, chat_id, thumb)
+        # ---------------- Split and send all parts ----------------
+        split_and_send(output_file, caption, chat_id, thumb)
+        split_and_send(output_file, caption, DUMP_CHANNEL_ID, thumb)
 
-        # Dump channel upload
-        try:
-            if filesize_mb > SPLIT_SIZE_MB:
-                split_and_send(output_file, caption, DUMP_CHANNEL_ID, thumb)
-            else:
-                send_video(output_file, caption, DUMP_CHANNEL_ID, thumb)
-        except: pass
-
+        # Clean up
         if os.path.exists(output_file):
             os.remove(output_file)
         if thumb and os.path.exists(thumb):
@@ -108,12 +99,20 @@ def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
     if not active_recordings[chat_id]:
         active_recordings.pop(chat_id, None)
 
+# ---------------- UPLOAD FUNCTIONS ----------------
 def send_video(filepath, caption, chat_id, thumb=None):
-    with open(filepath, "rb") as f:
-        bot.send_video(chat_id, f, caption=caption, thumb=open(thumb, "rb") if thumb else None)
+    try:
+        with open(filepath, "rb") as video_file:
+            if thumb and os.path.exists(thumb):
+                with open(thumb, "rb") as thumb_file:
+                    bot.send_video(chat_id, video_file, caption=caption, thumb=thumb_file)
+            else:
+                bot.send_video(chat_id, video_file, caption=caption)
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Upload failed: {e}")
 
 def split_and_send(filepath, caption, chat_id, thumb=None):
-    part_size = SPLIT_SIZE_MB*1024*1024
+    part_size = SPLIT_SIZE_MB * 1024 * 1024
     base, ext = os.path.splitext(filepath)
     part = 1
     with open(filepath, "rb") as f:
@@ -128,20 +127,19 @@ def split_and_send(filepath, caption, chat_id, thumb=None):
             send_video(part_file, part_caption, chat_id, thumb)
             if os.path.exists(part_file):
                 os.remove(part_file)
-            part +=1
+            part += 1
 
 # ---------------- COMMAND HANDLERS ----------------
 @bot.message_handler(commands=['start'])
 @admin_only
 def start(message):
-    bot.reply_to(message, "👋 Bot is online and running!\nUse /help to see available commands.")
+    bot.reply_to(message, "👋 Bot online hai!\nUse /help dekhne ke liye commands.")
 
 @bot.message_handler(commands=['help'])
 @admin_only
 def help_cmd(message):
     text = """
-Available Commands:
-/record <URL> <HH:MM:SS> <title> - Record stream
+/record <URL> [optional_title] - Record stream (5-min chunks, auto split)
 /cancel - Cancel your recording (reply to your recording message)
 /myrecordings - List your active recordings
 /allrecordings - List all active recordings
@@ -154,26 +152,19 @@ Available Commands:
 @admin_only
 def record_cmd(message):
     try:
-        parts = message.text.split(" ", 3)
-        if len(parts)<4:
-            return bot.reply_to(message, "Usage:\n/record <URL> <HH:MM:SS> <title>")
-        url = parts[1]
-        duration_str = parts[2]
-        title = parts[3]
+        parts = message.text.split(" ", 2)
+        if len(parts)<2:
+            return bot.reply_to(message, "📌 Usage: /record <URL> [optional_title]\n📝 Example:\n/record https://example.com/stream MyVideo")
 
-        # Parse duration
-        dparts = duration_str.split(":")
-        if len(dparts)==3:
-            total_seconds = int(dparts[0])*3600 + int(dparts[1])*60 + int(dparts[2])
-        elif len(dparts)==2:
-            total_seconds = int(dparts[0])*60 + int(dparts[1])
-        else:
-            total_seconds = int(dparts[0])
+        url = parts[1]
+        title = parts[2] if len(parts) > 2 else f"Recording_{datetime.datetime.now().strftime('%H-%M-%S')}"
 
         timestamp = datetime.datetime.now().strftime("%H-%M-%S.%d-%m-%Y")
         filename = f"{title}.{timestamp}.IPTV.WEB-DL.@Shitijbro.mkv"
-        msg = bot.reply_to(message, f"🎬 Recording '{title}' for {hms_format(total_seconds)} started...")
-        threading.Thread(target=record_stream, args=(message.chat.id, msg.message_id, url, total_seconds, title, filename)).start()
+
+        msg = bot.reply_to(message, f"🎬 Recording '{title}' started...\n⏱ Upload in 49MB chunks automatically.")
+        # Large value for unlimited recording
+        threading.Thread(target=record_stream, args=(message.chat.id, msg.message_id, url, 9999999, title, filename)).start()
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {e}")
 
