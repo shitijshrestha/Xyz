@@ -8,7 +8,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAFW2H-POtZ29vQy3vzWwiRWSWw7-X4kcsU"
+BOT_TOKEN = "7994446557:AAHsSpUlBz94ES-eryyyuWHLXniGSQWOHkE"
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
@@ -67,9 +67,19 @@ def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
     start_time = time.time()
     while proc.poll() is None:
         elapsed = int(time.time() - start_time)
-        percent = int((elapsed / total_seconds) * 100) if total_seconds>0 else 0
+        if elapsed > total_seconds:
+            elapsed = total_seconds
+        percent = int((elapsed / total_seconds) * 100)
+        if percent > 100:
+            percent = 100
         bar = "█" * (percent // 5) + "░" * (20 - (percent // 5))
-        safe_edit(f"🎬 Recording Progress\n📊 {percent}% [{bar}]\n⏱ {hms_format(elapsed)} / {hms_format(total_seconds)}\n🎯 {title}", chat_id, msg_id)
+        safe_edit(
+            f"🎬 Recording Progress\n"
+            f"📊 {percent}% [{bar}]\n"
+            f"⏱ {hms_format(elapsed)} / {hms_format(total_seconds)}\n"
+            f"🎯 {title}",
+            chat_id, msg_id
+        )
         time.sleep(2)
 
     proc.wait()
@@ -79,7 +89,7 @@ def record_stream(chat_id, msg_id, url, total_seconds, title, output_file):
         caption = f"📁 Filename: {os.path.basename(output_file)}\n⏱ Duration: {hms_format(total_seconds)}\n📦 File-Size: {filesize_mb:.2f} MB"
         thumb = generate_thumbnail(output_file)
 
-        # Upload user & dump channel part by part
+        # Upload to user & dump channel part by part
         split_and_send(output_file, caption, chat_id, thumb)
         split_and_send(output_file, caption, DUMP_CHANNEL_ID, thumb)
 
