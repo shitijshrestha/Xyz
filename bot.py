@@ -9,7 +9,7 @@ from functools import wraps
 from telebot.apihelper import ApiTelegramException
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAHtM5FerKiv46dL1AfwlOrhTc1Y8lVvNq8"  # Replace with your bot token
+BOT_TOKEN = "7994446557:AAEpk4CFOycH4wplXgJStGyW-FlwUJDzkbY"  # Replace with your bot token
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=10)
 
 PERMANENT_ADMIN = 6403142441
@@ -55,7 +55,7 @@ def hms_format(seconds):
     return f"{int(h)}hr, {int(m)}min, {int(s)}sec"
 
 def generate_thumbnail(video_file):
-    thumb_file = video_file.replace(".mkv", ".jpg")
+    thumb_file = video_file.rsplit(".",1)[0] + ".jpg"
     cmd = ["ffmpeg", "-y", "-i", video_file, "-ss", "00:00:05", "-vframes", "1", thumb_file]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return thumb_file if os.path.exists(thumb_file) else None
@@ -170,8 +170,9 @@ def start(message):
 @admin_only
 def help_cmd(message):
     text = """
+/record <URL> <HH:MM:SS> <title> - Record any direct URL
+/rec <ID> <HH:MM:SS> <title> - Record from playlist
 /find <name> - Search channel from playlist
-/rec <id> <HH:MM:SS> <title> - Record selected channel by ID
 /cancel - Cancel your recording
 /myrecordings - List your active recordings
 /allrecordings - List all active recordings
@@ -226,6 +227,103 @@ def rec_cmd(message):
     filename = f"{title}.{timestamp}.IPTV.WEB-DL.Shitij.mp4"
     msg = bot.reply_to(message, f"🎬 Recording **'{title}'** started ({total_seconds}s).")
     threading.Thread(target=record_stream, args=(message.chat.id, msg.message_id, url, total_seconds, title, filename)).start()
+
+@bot.message_handler(commands=['record'])
+@admin_only
+def record_cmd(message):
+    parts = message.text.split(" ",3)
+    if len(parts)<3:
+        return bot.reply_to(message, "Usage: /record <URL> <HH:MM:SS> <title>")
+    url = parts[1]
+    duration_str = parts[2]
+    title = parts[3] if len(parts)>=4 else "Recording"
+
+    # Parse duration
+    dparts = duration_str.split(":")
+    if len(dparts)==3:
+        total_seconds = int(dparts[0])*3600 + int(dparts[1])*60 + int(dparts[2])
+    elif len(dparts)==2:
+        total_seconds = int(dparts[0])*60 + int(dparts[1])
+    else:
+        total_seconds = int(dparts[0])
+
+    timestamp = datetime.datetime.now().strftime("%H-%M-%S.%d-%m-%Y")
+    filename = f"{title}.{timestamp}.IPTV.WEB-DL.Shitij.mp4"
+    msg = bot.reply_to(message, f"🎬 Recording **'{title}'** started ({total_seconds}s).")
+    threading.Thread(target=record_stream, args=(message.chat.id, msg.message_id, url, total_seconds, title, filename)).start()
+
+# ---------------- CANCEL / RECORD LISTS ----------------
+@bot.message_handler(commands=['cancel'])
+@admin_only
+def cancel(message):
+    if not message.reply_to_message:
+        return bot.reply_to(message, "Reply to your recording message to cancel.")
+    chat_id = message.chat.id
+    msg_id = message.reply_to_message.message_id
+    if chat_id in active_recordings and msg_id in active_recordings[chat_id]:
+        owner_id = active_recordings[chat_id][msg_id].get('user_id')
+        if owner_id == message.from_user.id:
+            proc = active_recordings[chat_id][msg_id]['proc']
+            proc.terminate()
+            bot.reply_to(message, "❌ Your recording canceled.")
+        else:
+            bot.reply_to(message, "⛔ You can only cancel your own recording.")
+    else:
+        bot.reply_to(message, "No active recording found.")
+
+@bot.message_handler(commands=['myrecordings'])
+@admin_only
+def myrec(message):
+    chat_id = message.chat.id
+    if chat_id in active_recordings and active_recordings[chat_id]:
+        text = "🎬 Your active recordings:\n"
+        for msg_id, info in active_recordings[chat_id].items():
+            if info.get('user_id') == message.from_user.id:
+                text += f"- {info['title']} (PID: {info['proc'].pid})\n"
+    else:
+        text = "No active recordings."
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=['allrecordings'])
+@admin_only
+def allrec(message):
+    total = sum(len(r) for r in active_recordings.values())
+    if total==0:
+        return bot.reply_to(message, "No active recordings.")
+    text = f"🎬 All active recordings ({total}):\n"
+    for chat_id, recs in active_recordings.items():
+        text+=f"\nChat {chat_id}:\n"
+        for msg_id, info in recs.items():
+            text += f"- {info['title']} (PID: {info['proc'].pid})\n"
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=['approve'])
+@admin_only
+def approve(message):
+    args = message.text.split()
+    if len(args)<2:
+        return bot.reply_to(message, "Usage: /approve <user_id>")
+    try:
+        uid = int(args[1])
+        approved_users.add(uid)
+        pending_users.discard(uid)
+        bot.reply_to(message, f"✅ User {uid} approved!")
+        bot.send_message(uid, "✅ You are approved to use the bot!")
+    except:
+        bot.reply_to(message, "Invalid user id.")
+
+@bot.message_handler(commands=['broadcast'])
+@admin_only
+def broadcast(message):
+    args = message.text.split(" ",1)
+    if len(args)<2:
+        return bot.reply_to(message, "Usage: /broadcast <message>")
+    msg = args[1]
+    for uid in approved_users:
+        try:
+            bot.send_message(uid, f"📢 Broadcast:\n\n{msg}")
+        except: pass
+    bot.reply_to(message, "✅ Broadcast sent to all approved users.")
 
 # ---------------- RUN BOT ----------------
 print("🤖 Bot is running...")
