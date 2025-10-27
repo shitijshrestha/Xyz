@@ -4,20 +4,23 @@ import threading
 import os
 import time
 import datetime
-from telebot.apihelper import ApiTelegramException
 import glob
+from telebot.apihelper import ApiTelegramException
+import pytz  # timezone support
 
 # ===================== CONFIG =====================
-BOT_TOKEN = "7994446557:AAEOInnu7ccKhfw1lXDGoAceHw-VqP2kbw4"  # Bot Token
+BOT_TOKEN = "7994446557:AAGuGR1Bc47pfQ5jIQNyURS4Dib3GUeq9sE"  # Bot Token
 PERMANENT_ADMIN = 6403142441       # Admin Telegram ID
 UPLOAD_SIZE_LIMIT = 50 * 1024 * 1024  # 50 MB per part
 PART_DURATION = 300  # 5 मिनट per part (seconds)
+INDIA_TZ = pytz.timezone('Asia/Kolkata')
 
 bot = telebot.TeleBot(BOT_TOKEN, num_threads=5)
 
 # ===================== GLOBAL VARIABLES =====================
 approved_users = set()
 recording_processes = {}  # chat_id : subprocess.Popen
+stop_events = {}          # chat_id : threading.Event()
 
 # ===================== FUNCTIONS =====================
 
@@ -45,23 +48,47 @@ def safe_upload(chat_id, file_path, caption):
             print(f"⚠️ Upload failed: {e}, retrying...")
             time.sleep(30)
 
+def parse_duration(duration_str):
+    """
+    Convert duration string to seconds.
+    Supports:
+    - HH:MM:SS
+    - MM:SS
+    - SS
+    """
+    parts = duration_str.strip().split(':')
+    parts = [int(p) for p in parts]
+    if len(parts) == 3:
+        return parts[0]*3600 + parts[1]*60 + parts[2]
+    elif len(parts) == 2:
+        return parts[0]*60 + parts[1]
+    elif len(parts) == 1:
+        return parts[0]
+    else:
+        return 0
+
 def record_and_upload(chat_id, url, start_time, end_time, title, stop_event):
     send_msg_safe(chat_id, f"🎬 रिकॉर्डिंग सेट की गई है:\n🕒 {start_time} ➜ {end_time}\n🎥 {title}")
-    
-    now = datetime.datetime.now()
+
+    now = datetime.datetime.now(INDIA_TZ)
     today = now.date()
-    start_dt = datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
-    end_dt = datetime.datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
-    if end_dt < start_dt:
-        end_dt += datetime.timedelta(days=1)
 
-    wait = (start_dt - now).total_seconds()
-    if wait > 0:
-        send_msg_safe(chat_id, f"⏳ {int(wait/60)} मिनट बाद रिकॉर्डिंग शुरू होगी...")
-        time.sleep(wait)
-
-    duration = int((end_dt - start_dt).total_seconds())
-    send_msg_safe(chat_id, f"▶️ रिकॉर्डिंग शुरू... कुल {duration//60} मिनट")
+    # Check if end_time is duration in seconds
+    if ':' in start_time or ':' in end_time:
+        # time format HH:MM or MM:SS
+        start_dt = INDIA_TZ.localize(datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M"))
+        end_dt = INDIA_TZ.localize(datetime.datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M"))
+        if end_dt < start_dt:
+            end_dt += datetime.timedelta(days=1)
+        duration = int((end_dt - start_dt).total_seconds())
+        wait = (start_dt - now).total_seconds()
+        if wait > 0:
+            send_msg_safe(chat_id, f"⏳ {int(wait)} seconds बाद रिकॉर्डिंग शुरू होगी...")
+            time.sleep(wait)
+    else:
+        # duration in seconds
+        duration = parse_duration(end_time)
+        send_msg_safe(chat_id, f"▶️ रिकॉर्डिंग start अभी... कुल {duration} seconds")
 
     output_pattern = f"{title}_part_%03d.mp4"
 
@@ -74,6 +101,7 @@ def record_and_upload(chat_id, url, start_time, end_time, title, stop_event):
     ]
     process = subprocess.Popen(cmd)
     recording_processes[chat_id] = process
+    stop_events[chat_id] = stop_event
 
     start_time_recording = time.time()
     part_count = 0
@@ -83,7 +111,7 @@ def record_and_upload(chat_id, url, start_time, end_time, title, stop_event):
         elapsed = time.time() - start_time_recording
         if elapsed >= duration or stop_event.is_set():
             process.terminate()
-            send_msg_safe(chat_id, "⏹ रिकॉर्डिंग manually stop कर दी गई।")
+            send_msg_safe(chat_id, "⏹ रिकॉर्डिंग stop कर दी गई।")
             break
 
         # Check for new parts ready for upload
@@ -98,7 +126,7 @@ def record_and_upload(chat_id, url, start_time, end_time, title, stop_event):
                 uploaded_parts.add(p)
                 send_msg_safe(chat_id, f"✅ Part {part_count} uploaded successfully!")
 
-        time.sleep(5)  # check every 5 seconds
+        time.sleep(2)  # check every 2 seconds
 
     # Upload remaining parts
     parts = sorted(glob.glob(f"{title}_part_*.mp4"))
@@ -113,6 +141,7 @@ def record_and_upload(chat_id, url, start_time, end_time, title, stop_event):
 
     send_msg_safe(chat_id, f"🎉 रिकॉर्डिंग पूरी हो गई!\n📤 कुल {part_count} पार्ट upload किए गए ✅")
     recording_processes.pop(chat_id, None)
+    stop_events.pop(chat_id, None)
 
 # ===================== COMMANDS =====================
 
@@ -122,14 +151,16 @@ def handle_start(message):
 
 @bot.message_handler(commands=['help'])
 def handle_help(message):
-    if not is_admin(message.from_user.id) and message.from_user.id not in approved_users:
+    user_id = message.from_user.id
+    if not is_admin(user_id) and user_id not in approved_users:
         bot.reply_to(message, "❌ केवल approved users और admin ही commands use कर सकते हैं।")
         return
     text = """
 🎬 Commands:
-/record <url> <start_time> <end_time> <title> - रिकॉर्डिंग शुरू करें
+/record <url> <start_time/end_time or duration> <end_time or title> <title_optional> - रिकॉर्डिंग शुरू करें
 /stop - रिकॉर्डिंग रोकें
 /help - ये message दिखाएँ
+/request - access request for user
 """
     bot.reply_to(message, text)
 
@@ -168,14 +199,26 @@ def handle_record(message):
         return
     try:
         args = message.text.split()
-        if len(args) < 4:
-            bot.reply_to(message, "📌 Usage:\n/record <m3u8_url> <start_time> <end_time> <title>")
+        if len(args) < 3:
+            bot.reply_to(message, "📌 Usage:\n/record <m3u8_url> <start_time/duration> <end_time/title> <title_optional>")
             return
-        url, start_time, end_time = args[1], args[2], args[3]
-        title = args[4] if len(args) > 4 else "IPTV_Record"
+
+        url = args[1]
+        start_time = args[2]
+        if len(args) == 3:
+            end_time = "10"  # default 10 seconds
+            title = "IPTV_Record"
+        elif len(args) == 4:
+            end_time = args[3]
+            title = "IPTV_Record"
+        else:
+            end_time = args[3]
+            title = args[4]
+
         stop_event = threading.Event()
         threading.Thread(target=record_and_upload, args=(message.chat.id, url, start_time, end_time, title, stop_event)).start()
         send_msg_safe(message.chat.id, "▶️ रिकॉर्डिंग started...")
+
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {e}")
 
@@ -187,9 +230,9 @@ def handle_stop(message):
     if not is_admin(user_id) and user_id not in approved_users:
         bot.reply_to(message, "❌ केवल approved users और admin ही रिकॉर्डिंग रोक सकते हैं।")
         return
-    process = recording_processes.get(message.chat.id)
-    if process:
-        process.terminate()
+    stop_event = stop_events.get(message.chat.id)
+    if stop_event:
+        stop_event.set()
         send_msg_safe(message.chat.id, "⏹ रिकॉर्डिंग stop कर दी गई।")
     else:
         send_msg_safe(message.chat.id, "⚠️ कोई active recording नहीं है।")
