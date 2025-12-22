@@ -9,7 +9,7 @@ import requests
 from flask import Flask, request
 
 # ================= CONFIG =================
-BOT_TOKEN = "8114598126:AAFBQ6Ia9yCcCfI8czJPXA7siDjhXxMvj1E"
+BOT_TOKEN = "8114598126:AAHrW43jl0EI-bn2JY0O18Yx-cdhBYbk9jY"
 PERMANENT_ADMIN = 6403142441
 DUMP_CHANNEL_ID = -1002627919828
 PLAYLIST_URL = "https://21dec2027-rkdyiptv.pages.dev/global.html"
