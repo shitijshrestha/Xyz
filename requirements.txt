@@ -6,3 +6,4 @@ pymongo
 requests
 ffmpeg-python
 python-dotenv
+Flask
