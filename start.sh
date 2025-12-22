@@ -1,10 +1,8 @@
 #!/bin/bash
-echo "🔧 Setting up environment..."
-sudo apt update -y
-sudo apt install -y python3 python3-pip ffmpeg git
+# Ensure rclone config exists
+if [ ! -f rclone.conf ]; then
+    echo "rclone.conf not found!"
+fi
 
-echo "📦 Installing dependencies..."
-pip3 install -r requirements.txt
-
-echo "🚀 Starting Telegram Bot..."
+# Run bot
 python3 bot.py
