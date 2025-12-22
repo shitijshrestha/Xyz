@@ -1,17 +1,19 @@
-FROM python:3.12
+FROM python:3.11-slim
 
+# Install FFmpeg and its dependencies
+RUN apt-get update && \
+    apt-get install -y ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set the working directory inside the container
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Copy the entire project directory (requirements.txt and bot folder)
+COPY . /app/
 
-COPY requirements.txt .
-
+# Install Python dependencies from the requirements.txt file
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p recordings
+# Run the bot using python3 -m when the container starts
+CMD ["python3", "-m", "bot"]
 
-COPY . .
-
-CMD python bot.py
