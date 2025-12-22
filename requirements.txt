@@ -1,3 +1,4 @@
+pyTelegramBotAPI
 pyrogram
 tgcrypto
 yt-dlp
