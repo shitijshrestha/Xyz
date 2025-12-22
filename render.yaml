@@ -1,7 +1,7 @@
 services:
   - type: web
     plan: free
-    name: Bot 
+    name: Bots
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
