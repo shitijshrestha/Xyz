@@ -2,7 +2,7 @@
 import telebot, subprocess, threading, os, datetime, shlex, time, requests
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "7994446557:AAGUst8lYw_A0iQ5hqFjQv1BeygUFqRx_kU"  # Replace with your bot token
+BOT_TOKEN = "7994446557:AAFdPWh2xhi3TbPUQuRGi_Z_YhxEFy78A7g"  # Replace with your bot token
 PERMANENT_ADMIN = 6403142441        # Replace with your admin ID
 DUMP_CHANNEL_ID = -1002627919828    # Dump channel ID
 TEMP_DIR = "recordings"
