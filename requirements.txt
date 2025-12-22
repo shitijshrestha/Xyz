@@ -1,4 +1,8 @@
-flask
-telebot
-requests
-pillow
+pyrogram
+tgcrypto
+pymongo
+yt-dlp
+python-dotenv
+ffmpeg-python
+motor
+hachoir
