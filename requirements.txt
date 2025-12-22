@@ -1,8 +1,7 @@
 pyrogram
 tgcrypto
-pymongo
 yt-dlp
-python-dotenv
+pymongo
+requests
 ffmpeg-python
-motor
-hachoir
+python-dotenv
