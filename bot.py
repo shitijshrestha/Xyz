@@ -8,7 +8,7 @@ import time
 import requests
 
 # ================= CONFIG =================
-BOT_TOKEN = "8114598126:AAGDJ8GgFalwEE9JymRuTMinJ0Iiayn6WyI"
+BOT_TOKEN = "9231852175:AAEmC4uuHjhxiSts_gyBUgsSoQWBHEr4e4c"
 PERMANENT_ADMIN = 6403142441
 DUMP_CHANNEL_ID = -1002627919828
 PLAYLIST_URL = "https://21dec2027-rkdyiptv.pages.dev/global.html"
